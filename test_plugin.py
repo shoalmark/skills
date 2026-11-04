@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import posixpath
 import re
 import sys
 
@@ -7,6 +8,30 @@ import sys
 HERE = Path(__file__).resolve().parent
 PUBLIC_ID = re.compile(r"\b(?:FM|RV|SP|HL|FEAT|BUG)-\d+\b")
 HOME_PATH = re.compile(r"(?i)(?:/(?:Users|home)/|[a-z]:[/\\]+Users[/\\]+|~[/\\]|%USERPROFILE%|\$(?:HOME\b|\{HOME\}))")
+PUBLIC_ID_SCAN = ("plugins", ".claude-plugin", ".agents", ".github", "README.md", "CHANGELOG.md", "SECURITY.md")
+HOME_PATH_SCAN = ("plugins", ".claude-plugin", ".agents", ".github")
+
+NAME = "shoalmark"
+PLUGIN = "plugins/shoalmark"
+SKILLS = PLUGIN + "/skills"
+DESCRIPTION = "Skills that find repository rules held only as prose, conflicting sources and obsolete guidance."
+LICENSE = "Apache-2.0 OR MIT"
+SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+SCHEMA_PROPERTIES = ("$schema", "name", "version", "description", "author", "homepage", "repository", "license",
+                     "keywords", "extensions")
+SCHEMA_NAME = re.compile(r"(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+CODEX_INSTALLATION = ("AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE")
+SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+WORKS_ANYWHERE = "Any git repository. Uses shoalmark.toml when present; never runs shoalmark."
+VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
+ONE_HARNESS_TOOL = re.compile(
+    r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
+    r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
+SHOALMARK_COMMAND = re.compile(
+    r"(?<![\w./-])(?:python[0-9.]*|pypy[0-9.]*|py|uv[ \t]+run|pipx[ \t]+run|sys\.executable|subprocess|os\.system)"
+    r"(?![\w-])(?:(?![.;:]\s)[^\n]){0,80}?\bshoalmark\.py\b"
+    r"|(?<![\w.-])\.{1,2}/(?:[\w.-]+/)*shoalmark\.py\b"
+    r"|\bshoalmark\.py`?[ \t]+-{1,2}[A-Za-z]")
 
 
 def _front_matter(text):
@@ -40,6 +65,53 @@ def _front_matter(text):
     return fields
 
 
+def _starts_with_gate(text):
+    lines = text.splitlines()
+    body = "\n".join(lines[lines.index("---", 1) + 1:])
+    match = re.search(r"(?ms)^1\.[ \t]+(.*?)(?=^\d+\.[ \t]|\Z)", body)
+    if match:
+        step = match.group(1)
+    else:
+        paragraphs = [part for part in re.split(r"\n[ \t]*\n", body) if part.strip() and not part.lstrip().startswith("#")]
+        step = paragraphs[0] if paragraphs else ""
+    step = " ".join(step.split())
+    return all(word in step for word in ("pinned", "shoalmark.py", "--version", "--check")) and (
+        step.index("pinned") < step.index("--version") < step.index("--check"))
+
+
+def _entries(marketplace):
+    entries = marketplace.get("plugins")
+    return entries if isinstance(entries, list) else []
+
+
+def _local_path(source):
+    if isinstance(source, dict):
+        source = source.get("path")
+    if not isinstance(source, str) or not source.startswith("./"):
+        return None
+    return posixpath.normpath(source)
+
+
+def _same(values):
+    return len({json.dumps(value, sort_keys=True) for value in values}) == 1
+
+
+def _files(path):
+    if path.is_file():
+        return [path]
+    return sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else []
+
+
+def _hits(pattern, folder):
+    found = []
+    for path in _files(folder):
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        for match in pattern.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            found.append(path.relative_to(HERE).as_posix() + ":" + str(line) + ": " + match.group(0))
+    return found
+
+
 def run_checks(results=None):
     if results is None:
         results = []
@@ -56,48 +128,134 @@ def run_checks(results=None):
             check(relative + " is a JSON object", False, str(error))
             return {}
 
-    plugin = read_json(".claude-plugin/plugin.json")
-    marketplace = read_json(".claude-plugin/marketplace.json")
-    check("plugin name is shoalmark", plugin.get("name") == "shoalmark")
-    check("plugin has a description", isinstance(plugin.get("description"), str) and bool(plugin["description"].strip()))
-    check("plugin carries the repository's license", plugin.get("license") == "Apache-2.0 OR MIT")
-    check("plugin uses the root skills directory", "skills" not in plugin or plugin["skills"] in ("./skills/", ["./skills/"]))
-    version = (HERE / "VERSION").read_text(encoding="utf-8").strip()
-    check("plugin version is absent or matches VERSION", "version" not in plugin or plugin["version"] == version)
-    check("marketplace name is shoalmark", marketplace.get("name") == "shoalmark")
-    owner = marketplace.get("owner")
-    check("marketplace has an owner name", isinstance(owner, dict) and isinstance(owner.get("name"), str) and bool(owner["name"].strip()))
-    entries = marketplace.get("plugins")
-    check("marketplace lists only shoalmark from ./", isinstance(entries, list) and len(entries) == 1
-          and isinstance(entries[0], dict) and entries[0].get("name") == "shoalmark" and entries[0].get("source") == "./")
+    claude_market = read_json(".claude-plugin/marketplace.json")
+    claude_plugin = read_json(PLUGIN + "/.claude-plugin/plugin.json")
+    codex_plugin = read_json(PLUGIN + "/plugin.json")
+    codex_market = read_json(".agents/plugins/marketplace.json")
+    claude_entries, codex_entries = _entries(claude_market), _entries(codex_market)
+    claude_entry = claude_entries[0] if len(claude_entries) == 1 and isinstance(claude_entries[0], dict) else {}
+    codex_entry = codex_entries[0] if len(codex_entries) == 1 and isinstance(codex_entries[0], dict) else {}
 
-    skills = HERE / "skills"
-    folders = sorted(path for path in skills.iterdir() if path.is_dir()) if skills.is_dir() else []
-    check("skills directory contains skills", bool(folders))
-    for folder in folders:
-        path = folder / "SKILL.md"
-        relative = path.relative_to(HERE).as_posix()
-        check(relative + " exists", path.is_file())
-        if not path.is_file():
-            continue
-        try:
-            fields = _front_matter(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            check(relative + " front matter parses", False, str(error))
-            continue
-        check(relative + " front matter parses", True)
-        check(relative + " name matches its folder", fields.get("name") == folder.name)
-        description = fields.get("description", "")
-        check(relative + " description has 1 to 1024 characters", 0 < len(description) <= 1024)
+    check("Claude marketplace name is shoalmark", claude_market.get("name") == NAME)
+    owner = claude_market.get("owner")
+    check("Claude marketplace owner name is shoalmark", isinstance(owner, dict) and owner.get("name") == NAME)
+    check("Claude marketplace lists only shoalmark from ./plugins/shoalmark", len(claude_entries) == 1
+          and claude_entry.get("name") == NAME and claude_entry.get("source") == "./" + PLUGIN)
+    check("Claude plugin name is shoalmark", claude_plugin.get("name") == NAME)
+    check("Claude plugin carries shoalmark's description", claude_plugin.get("description") == DESCRIPTION)
+    check("Claude plugin carries the repository's license", claude_plugin.get("license") == LICENSE)
 
-    for folder in (skills, HERE / ".claude-plugin"):
-        for path in sorted(folder.rglob("*")):
+    check("Codex plugin.json names the Agent Plugins schema", codex_plugin.get("$schema") == SCHEMA_URL)
+    codex_name = codex_plugin.get("name")
+    check("Codex plugin.json name meets the schema's pattern and length", isinstance(codex_name, str)
+          and 1 <= len(codex_name) <= 64 and SCHEMA_NAME.fullmatch(codex_name) is not None)
+    extra = sorted(set(codex_plugin) - set(SCHEMA_PROPERTIES))
+    check("Codex plugin.json carries only the schema's properties", not extra, "outside the schema: " + ", ".join(extra))
+    check("Codex plugin.json sets no skills field", "skills" not in codex_plugin)
+    check("Codex marketplace name is shoalmark", codex_market.get("name") == NAME)
+    interface = codex_market.get("interface")
+    check("Codex marketplace has an interface.displayName", isinstance(interface, dict)
+          and isinstance(interface.get("displayName"), str) and bool(interface["displayName"].strip()))
+    codex_source = codex_entry.get("source")
+    check("Codex marketplace lists only shoalmark from ./plugins/shoalmark", len(codex_entries) == 1
+          and codex_entry.get("name") == NAME and isinstance(codex_source, dict)
+          and codex_source.get("source") == "local" and codex_source.get("path") == "./" + PLUGIN)
+    policy = codex_entry.get("policy")
+    check("Codex marketplace entry carries its install policy and category", isinstance(policy, dict)
+          and policy.get("installation") in CODEX_INSTALLATION
+          and isinstance(policy.get("authentication"), str) and bool(policy["authentication"].strip())
+          and isinstance(codex_entry.get("category"), str) and bool(codex_entry["category"].strip()))
+
+    names = [claude_plugin.get("name"), claude_entry.get("name"), codex_plugin.get("name"), codex_entry.get("name")]
+    check("Claude and Codex agree on the plugin name", isinstance(names[0], str) and _same(names))
+    check("Claude and Codex agree on the marketplace name", isinstance(claude_market.get("name"), str)
+          and _same([claude_market.get("name"), codex_market.get("name")]))
+    descriptions = [claude_plugin.get("description"), codex_plugin.get("description")]
+    descriptions += [entry["description"] for entry in claude_entries + codex_entries
+                     if isinstance(entry, dict) and "description" in entry]
+    check("Claude and Codex agree on the description, entries included", isinstance(descriptions[0], str)
+          and _same(descriptions))
+    check("Claude and Codex agree on the licence", isinstance(claude_plugin.get("license"), str)
+          and _same([claude_plugin.get("license"), codex_plugin.get("license")]))
+    claude_root, codex_root = _local_path(claude_entry.get("source")), _local_path(codex_source)
+    claude_skills = claude_plugin.get("skills", "./skills/")
+    claude_skills = claude_skills if isinstance(claude_skills, list) else [claude_skills]
+    claude_folder = claude_root + "/skills" if claude_root and claude_skills in (["./skills/"], ["./skills"]) else None
+    codex_folder = codex_root + "/skills" if codex_root and "skills" not in codex_plugin else None
+    check("Claude and Codex both resolve the skills folder to plugins/shoalmark/skills/",
+          claude_folder == codex_folder == SKILLS and (HERE / SKILLS).is_dir(),
+          "Claude: " + str(claude_folder) + ", Codex: " + str(codex_folder))
+
+    versions = []
+    for label, manifest in (("Claude marketplace", claude_market), ("Claude plugin.json", claude_plugin),
+                            ("Codex plugin.json", codex_plugin), ("Codex marketplace", codex_market)):
+        holders = [(label, manifest), (label + " metadata", manifest.get("metadata"))]
+        holders += [(label + " entry " + str(index), entry) for index, entry in enumerate(_entries(manifest))]
+        for where, holder in holders:
+            if isinstance(holder, dict) and "version" in holder:
+                versions.append((where, json.dumps(holder["version"])))
+    changelog = HERE / "CHANGELOG.md"
+    if changelog.is_file():
+        headings = re.findall(r"(?m)^##[ \t]+(.+?)[ \t]*$", changelog.read_text(encoding="utf-8"))
+        released = [VERSION.search(heading) for heading in headings if heading.strip("[] ").lower() != "unreleased"]
+        released = [match.group(0) for match in released if match]
+        if released:
+            versions.append(("CHANGELOG.md newest release", json.dumps(released[0])))
+    check("every version present agrees across the manifests and the CHANGELOG (" + str(len(versions)) + " found)",
+          len({value for _, value in versions}) <= 1, "; ".join(where + ": " + value for where, value in versions))
+    check("Claude plugin.json and its marketplace entry do not both set version",
+          not ("version" in claude_plugin and "version" in claude_entry))
+
+    skills = HERE / SKILLS
+    check("plugins/shoalmark/skills contains skills", skills.is_dir() and any(path.is_dir() for path in skills.iterdir()))
+    plugins = sorted(path for path in (HERE / "plugins").iterdir() if path.is_dir()) if (HERE / "plugins").is_dir() else []
+    gated = []
+    for plugin in plugins:
+        folders = (plugin / "skills").iterdir() if (plugin / "skills").is_dir() else ()
+        for folder in sorted(path for path in folders if path.is_dir()):
+            path = folder / "SKILL.md"
+            relative = path.relative_to(HERE).as_posix()
+            check(relative + " exists", path.is_file())
             if not path.is_file():
                 continue
-            relative = path.relative_to(HERE).as_posix()
+            text = path.read_text(encoding="utf-8")
+            try:
+                fields = _front_matter(text)
+            except (OSError, ValueError) as error:
+                check(relative + " front matter parses", False, str(error))
+                continue
+            check(relative + " front matter parses", True)
+            name = fields.get("name", "")
+            check(relative + " name matches its folder", name == folder.name)
+            check(relative + " name meets the Agent Skills rules", len(name) <= 64 and SKILL_NAME.fullmatch(name) is not None)
+            description = fields.get("description", "")
+            check(relative + " description has 1 to 1024 characters", 0 < len(description) <= 1024)
+            compatibility = fields.get("compatibility")
+            check(relative + " compatibility has 1 to 500 characters when present",
+                  compatibility is None or 0 < len(compatibility) <= 500)
+            if plugin.name == NAME:
+                check(relative + " carries the works-anywhere compatibility wording", compatibility == WORKS_ANYWHERE)
+                hits = _hits(SHOALMARK_COMMAND, folder)
+                check(folder.relative_to(HERE).as_posix() + " never names shoalmark.py as a command", not hits,
+                      "\n        ".join(hits))
+            else:
+                check(relative + " carries a needs-shoalmark compatibility wording",
+                      bool(compatibility) and compatibility != WORKS_ANYWHERE)
+                gated.append((relative, _starts_with_gate(text)))
+            hits = _hits(ONE_HARNESS_TOOL, folder)
+            check(folder.relative_to(HERE).as_posix() + " names no tool only one harness has", not hits,
+                  "\n        ".join(hits))
+    check("each needs-shoalmark skill starts with the gate (" + str(len(gated)) + " found)",
+          all(ok for _, ok in gated), "without the gate: " + ", ".join(relative for relative, ok in gated if not ok))
+
+    for relative in PUBLIC_ID_SCAN:
+        for path in _files(HERE / relative):
             text = path.read_bytes().decode("utf-8", errors="replace")
-            check(relative + " has no tracker or review id", PUBLIC_ID.search(text) is None)
-            check(relative + " has no home folder path", HOME_PATH.search(text) is None)
+            check(path.relative_to(HERE).as_posix() + " has no tracker or review id", PUBLIC_ID.search(text) is None)
+    for relative in HOME_PATH_SCAN:
+        for path in _files(HERE / relative):
+            text = path.read_bytes().decode("utf-8", errors="replace")
+            check(path.relative_to(HERE).as_posix() + " has no home folder path", HOME_PATH.search(text) is None)
 
     find_folder = skills / "find-drift"
     find_text = " ".join((find_folder / "SKILL.md").read_text(encoding="utf-8").split())

@@ -6,7 +6,7 @@ import tempfile
 
 
 HERE = Path(__file__).resolve().parent
-PROOF = HERE / "skills" / "prune-drift" / "prose_only.py"
+PROOF = HERE / "plugins" / "shoalmark" / "skills" / "prune-drift" / "prose_only.py"
 FIXTURES = (
     ("deleted comment", "# a past explanation\nvalue = 1\n", "value = 1\n", True, "prose-only"),
     ("deleted docstrings",
