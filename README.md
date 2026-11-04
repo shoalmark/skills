@@ -1,5 +1,7 @@
 # shoalmark skills
 
+[Deutsch](README.de.md)
+
 Two agent skills from [shoalmark](https://github.com/shoalmark/shoalmark), packaged as one plugin for Claude Code and
 Codex.
 
@@ -52,6 +54,12 @@ shoalmark from it
 - **Codex:** type `$` to mention a skill: `$find-drift` and `$prune-drift`
   ([How ChatGPT and Codex use skills](https://developers.openai.com/codex/skills#how-codex-uses-skills)).
 
+The report and the conversation follow your language: that of shoalmark's Board, `lang` in the repository's
+`<tracker folder>/brand/labels.yaml`, where that file sets a valid one; else the language you write in. The report's
+section keys and its ids stay English. The skills read only that file, so where the Board takes `lang` from the
+`brand/labels.yaml` beside the vendored `shoalmark.py` or from `~/.config/shoalmark/labels.yaml`, the report's
+language can differ from the Board's.
+
 ## Copy the skills without the plugin
 
 Copy both folders, `plugins/shoalmark/skills/find-drift/` and `plugins/shoalmark/skills/prune-drift/`, side by side
@@ -66,7 +74,18 @@ Copied skills carry no plugin prefix, so Claude Code runs them as `/find-drift` 
 
 ## More
 
-- [shoalmark](https://github.com/shoalmark/shoalmark), where these skills come from.
 - [SECURITY.md](SECURITY.md) to report a vulnerability, and [CHANGELOG.md](CHANGELOG.md) for changes.
 - Licensed under Apache-2.0 or MIT, at your option: [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT) and
   [NOTICE](NOTICE).
+
+## Where these skills come from
+
+These skills come from shoalmark. *A workbench for your agents. Your decisions on record.* For one person in charge
+and their agent fleet. See where the work stands, what waits for your word, and what the next session picks up. Your
+agents keep that record in your repository; your decisions go into it as your own commits, beside the evidence behind
+the work.
+
+- [Why shoalmark?](https://shoalmark.tools/why-shoalmark.html)
+- [Set up in ten minutes](https://shoalmark.tools/setup.html)
+- [shoalmark's repository](https://github.com/shoalmark/shoalmark)
+- [Send feedback](https://shoalmark.tools/feedback)

@@ -6,13 +6,19 @@ compatibility: "Any git repository. Uses shoalmark.toml when present; never runs
 
 # Prune drift
 
+Write the report's prose, and talk with the person, in their language: `lang` in this repository's
+`<tracker folder>/brand/labels.yaml`, read from no other place, where its value fully matches
+`[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the person writes in;
+section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written.
+
 1. Snapshot: take [find-drift](../find-drift/SKILL.md)'s step 1 in full, including its clean-tree check, tracker
    folder and destination rules, and limits for parts not checked out. Create a new branch from HEAD; never work
    on the default branch. Apply owner-only path restrictions to every step: write out their fixes for the owner.
-2. Report: read the newest find-drift report under `<tracker folder>/evidence/drift/` whose `<file>.sha256`
-   matches its bytes. Check freshness with `git diff --quiet <snapshot> HEAD -- <its sources>`: no listed source
-   may have changed. Try reports newest first; if none is fresh, run find-drift in full first. Keep its snapshot,
-   source hashes and limits; a scoped report cannot replace a full report.
+2. Report: read the newest find-drift report under `<tracker folder>/evidence/drift/` whose `<file>.sha256` matches
+   its bytes. Check freshness with `git diff --quiet <snapshot> HEAD -- <its sources>`, both from its
+   `## snapshot`: no listed source may have changed. Try reports newest first; if none is fresh, run find-drift in
+   full first. Keep its snapshot and source hashes from `## snapshot` and its limits from `## limits`; a scoped
+   report cannot replace a full report.
 3. Sort every comment and docstring in tracked code that can be parsed, one row per part, with its `file:line`
    and the sha256 of its exact text. Name unparseable code as a limit. Use four classes: **history** (who decided,
    which review, when; cite the git, tracker or commit reference already holding it); **history not yet in the
@@ -37,12 +43,13 @@ compatibility: "Any git repository. Uses shoalmark.toml when present; never runs
 7. Rules: never delete them. List each `file:line` as a candidate conversion, ranked by the report's layers:
    1 impossible to break; 2 the build fails; 3 a rule or a review; 4 a skill; 5 a style guide. A promotion is to a
    lower number; keep judgement rules apart, unranked. Build no check.
-8. Obsolete text and disagreements: in separate commits, fix obsolete text only with its superseding source
-   cited: rewrite to that source's rule, or delete an obsolete copy where that source already holds it. Edit
-   directly only in documentation files and in Python files the step 6 proof shows prose-only; in any other code
-   or configuration file, write the exact proposed fix for the person instead. Fix a disagreement only where one
-   side cites a later ruling. Name every other disagreement for the person. Never remove a live rule or keep
-   part. Never edit an owner-only path; write its exact proposed fix for the owner.
+8. Obsolete text and disagreements, from the report's `## obsolete` and `## disagreements`: in separate commits,
+   fix obsolete text only with its superseding source cited: rewrite to that source's rule, or delete an obsolete
+   copy where that source already holds it. Edit directly only in documentation files and in Python files the
+   step 6 proof shows prose-only; in any other code or configuration file, write the exact proposed fix for the
+   person instead. Fix a disagreement only where one side cites a later ruling. Name every other disagreement for
+   the person. Never remove a live rule or keep part. Never edit an owner-only path; write its exact proposed fix
+   for the owner.
 9. Report: write `<tracker folder>/evidence/drift/<date>-<short sha>-prune.md`, with date as `YYYY-MM-DD` and sha
    from the starting snapshot, or the agreed destination without a tracker folder. Include the sort (one row per
    part), each action and its commit, the proof's output, candidate conversions, what needs a look and why, and

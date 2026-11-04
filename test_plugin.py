@@ -9,8 +9,18 @@ import sys
 HERE = Path(__file__).resolve().parent
 PUBLIC_ID = re.compile(r"\b(?:FM|RV|SP|HL|FEAT|BUG)-\d+\b")
 HOME_PATH = re.compile(r"(?i)(?:/(?:Users|home)/|[a-z]:[/\\]+Users[/\\]+|~[/\\]|%USERPROFILE%|\$(?:HOME\b|\{HOME\}))")
-PUBLIC_ID_SCAN = ("plugins", ".claude-plugin", ".agents", ".github", "README.md", "CHANGELOG.md", "SECURITY.md")
+ROOT_TEXTS = ("README.md", "README.de.md", "CHANGELOG.md", "SECURITY.md")
+PUBLIC_ID_SCAN = ("plugins", ".claude-plugin", ".agents", ".github") + ROOT_TEXTS
 HOME_PATH_SCAN = ("plugins", ".claude-plugin", ".agents", ".github")
+TWINS = ("README.md", "README.de.md")
+REPOSITORY = "https://github.com/shoalmark/shoalmark"
+FEEDBACK = "https://shoalmark.tools/feedback"
+OWN_PAGES = {
+    "README.md": ("https://shoalmark.tools/why-shoalmark.html", "https://shoalmark.tools/setup.html"),
+    "README.de.md": ("https://shoalmark.tools/de/warum-shoalmark.html", "https://shoalmark.tools/de/setup.html"),
+}
+OWN_SITE = {"README.md": "https://shoalmark.tools/", "README.de.md": "https://shoalmark.tools/de/"}
+INSTALL = re.compile(r"marketplace add|plugin install")
 
 NAME = "shoalmark"
 PLUGIN = "plugins/shoalmark"
@@ -24,10 +34,55 @@ SCHEMA_NAME = re.compile(r"(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
 CODEX_INSTALLATION = ("AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE")
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 WORKS_ANYWHERE = "Any git repository. Uses shoalmark.toml when present; never runs shoalmark."
+FRONT_MATTER = {
+    "find-drift": (
+        "Find every place in this repository where an agent could drift off track — rules kept only as prose, "
+        "sources that disagree, and obsolete text that still reads as live — and rank what can become a check. "
+        "Reads the repository; writes one report and its hash in the tracker folder's evidence/drift/, or where it is "
+        "told when there is no tracker folder. Use before a release or before pruning prose; after a single rule or "
+        "ruling changes, run steps 3 to 7 on the sources it touches.",
+        WORKS_ANYWHERE),
+    "prune-drift": (
+        "Prune recorded history from comments and unread docstrings in tracked code, using find-drift's report and a "
+        "proof that code stays the same. Record missing reasons first, list rules that could become checks, and fix "
+        "obsolete or conflicting prose only where a superseding source settles it. Work on a new branch; write the "
+        "actions, proof and limits to the tracker folder's evidence/drift/. Use after find-drift or when asked to "
+        "prune prose.",
+        WORKS_ANYWHERE),
+}
+REPORT_KEYS = ("snapshot", "rules", "breaks", "ranking", "disagreements", "obsolete", "limits")
+REPORT_KEY = re.compile(r"`##[ ]([^`]*)`")
+PRUNE_READS = {2: ("snapshot", "limits"), 8: ("disagreements", "obsolete")}
+LANG_PATTERN = "[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*"
+LANGUAGE_CLAUSES = (
+    "talk with the person, in their language:",
+    "`lang` in this repository's `<tracker folder>/brand/labels.yaml`, read from no other place,",
+    "where its value fully matches `" + LANG_PATTERN + "`;",
+    "the language the person writes in;",
+    "section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written.",
+)
+LANGUAGE_SENTENCE = {
+    "find-drift": (
+        "Write the prose of the report and the supplement, and talk with the person, in their language: `lang` in "
+        "this repository's `<tracker folder>/brand/labels.yaml`, read from no other place, where its value fully "
+        "matches `[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the "
+        "person writes in; section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as "
+        "written."
+    ),
+    "prune-drift": (
+        "Write the report's prose, and talk with the person, in their language: `lang` in this repository's `<tracker "
+        "folder>/brand/labels.yaml`, read from no other place, where its value fully matches "
+        "`[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the person "
+        "writes in; section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written."
+    ),
+}
+REPORT_SPANS = tuple("## " + key for key in REPORT_KEYS)
+BACKTICK_SPAN = re.compile(r"`([^`]*)`")
 VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
+PROMOTION = re.compile(r"(?i)shoalmark\.tools|github\.com/shoalmark/shoalmark")
 # Stripped lines that may mention shoalmark.py in the works-anywhere plugin; any other such line fails.
 ALLOWED_SHOALMARK_MENTIONS = ()
 PIN = "<40 hex> # <tag>"
@@ -179,6 +234,86 @@ def _differs(expected, path):
     return ""
 
 
+def _raw_steps(text):
+    steps, number = {}, None
+    for line in text.splitlines():
+        match = re.match(r"(\d+)\. ", line)
+        if match:
+            number = int(match.group(1))
+            steps[number] = [line]
+        elif number is not None and line.startswith(" ") and line.strip():
+            steps[number].append(line)
+        else:
+            number = None
+    return {number: "\n".join(lines) for number, lines in steps.items()}
+
+
+def _steps(text):
+    return {number: " ".join(step.split()) for number, step in _raw_steps(text).items()}
+
+
+def _sentence(text, clause):
+    return next((sentence for sentence in re.split(r"(?<=\.)\s+", text) if clause in sentence), "")
+
+
+def _key_spans(text):
+    return [span for span in BACKTICK_SPAN.findall(text) if "##" in span]
+
+
+def _paragraphs(text):
+    found, lines = [], []
+    for line in text.split("\n") + [""]:
+        if line.strip():
+            lines.append(re.sub(r"^[ \t]+", "", line))
+        elif lines:
+            found.append(" ".join(lines))
+            lines = []
+    return found
+
+
+def _markdown(text):
+    parts = {"levels": [], "blocks": [], "installs": [], "last": ""}
+    prose, block, fence, last = [], [], "", 0
+
+    def spans():
+        found = re.findall(r"`([^`]+)`", "\n".join(prose))
+        parts["installs"].extend(" ".join(span.split()) for span in found if INSTALL.search(span))
+        del prose[:]
+
+    lines = text.split("\n")
+    for number, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        indented = len(line) - len(stripped) > 3
+        if fence:
+            block.append(line)
+            if not indented and re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", stripped):
+                parts["blocks"].append("\n".join(block))
+                block, fence = [], ""
+            elif INSTALL.search(line):
+                parts["installs"].append(" ".join(line.split()))
+            continue
+        opening = re.match(r"`{3,}|~{3,}", stripped)
+        heading = re.match(r"(#{1,6})(?:[ \t]|$)", stripped)
+        if opening and not indented:
+            spans()
+            fence, block = opening.group(0), [line]
+        elif heading and not indented:
+            spans()
+            parts["levels"].append(len(heading.group(1)))
+            last = number if len(heading.group(1)) <= 2 else last
+        else:
+            prose.append(line)
+    spans()
+    if fence:
+        parts["blocks"].append("\n".join(block))
+    parts["last"] = "\n".join(lines[last:])
+    return parts
+
+
+def _links(text):
+    return re.findall(r"\]\((\S+?)\)", text)
+
+
 def _hits(pattern, folder):
     found = []
     for path in _files(folder):
@@ -311,6 +446,8 @@ def run_checks(results=None):
                   compatibility is None or 0 < len(compatibility) <= 500)
             if plugin.name == NAME:
                 check(relative + " carries the works-anywhere compatibility wording", compatibility == WORKS_ANYWHERE)
+                check(relative + " keeps its description and compatibility as written, in English",
+                      (description, compatibility) == FRONT_MATTER.get(folder.name))
             else:
                 check(relative + " carries a needs-shoalmark compatibility wording",
                       bool(compatibility) and compatibility != WORKS_ANYWHERE)
@@ -322,11 +459,18 @@ def run_checks(results=None):
     mentions = _mentions(HERE / PLUGIN)
     check(PLUGIN + " mentions shoalmark.py on no line outside ALLOWED_SHOALMARK_MENTIONS", not mentions,
           "\n        ".join(mentions))
+    promotions = []
+    for path in _walk(HERE / "plugins")[0]:
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        promotions += [path.relative_to(HERE).as_posix() + ":" + str(text.count("\n", 0, match.start()) + 1) + ": "
+                       + match.group(0) for match in PROMOTION.finditer(text)]
+    check("plugins/ names neither shoalmark's site nor its repository; the way to shoalmark is in the READMEs",
+          not promotions, "\n        ".join(promotions))
     others = [path.name for path in plugins if path.name != NAME]
     check("plugins/ holds no plugin folder but shoalmark; the lane that adds a second plugin writes its gate check",
           not others, "found: " + ", ".join(others))
 
-    for relative in ("README.md", "CHANGELOG.md", "SECURITY.md"):
+    for relative in ROOT_TEXTS:
         check(relative + " exists", (HERE / relative).is_file())
     for relative in PUBLIC_ID_SCAN:
         for path in _files(HERE / relative):
@@ -336,6 +480,36 @@ def run_checks(results=None):
         for path in _files(HERE / relative):
             text = path.read_bytes().decode("utf-8", errors="replace")
             check(path.relative_to(HERE).as_posix() + " has no home folder path", HOME_PATH.search(text) is None)
+
+    twins = {}
+    for relative in TWINS:
+        try:
+            twins[relative] = (HERE / relative).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            twins[relative] = ""
+    english, german = (_markdown(twins[relative]) for relative in TWINS)
+    pair = " and ".join(TWINS)
+    check(pair + " have the same sequence of heading levels", english["levels"] == german["levels"],
+          " | ".join(relative + ": " + " ".join("#" * level for level in parts["levels"])
+                     for relative, parts in zip(TWINS, (english, german))))
+    differ = [str(index + 1) for index in range(max(len(english["blocks"]), len(german["blocks"])))
+              if english["blocks"][index:index + 1] != german["blocks"][index:index + 1]]
+    check(pair + " have every fenced code block equal, in order", not differ,
+          "blocks that differ: " + ", ".join(differ))
+    check(pair + " have every install command equal, in order",
+          english["installs"] == german["installs"] and bool(english["installs"]),
+          " | ".join(relative + ": " + "; ".join(parts["installs"])
+                     for relative, parts in zip(TWINS, (english, german))))
+    closing = []
+    for relative, parts in zip(TWINS, (english, german)):
+        wanted = (REPOSITORY, FEEDBACK) + OWN_PAGES[relative]
+        closing += [relative + " last section lacks " + link for link in wanted if link not in _links(parts["last"])]
+        for link in _links(twins[relative]):
+            site = max((path for path in OWN_SITE.values() if link.startswith(path)), key=len, default=None)
+            if link != FEEDBACK and site not in (None, OWN_SITE[relative]):
+                closing.append(relative + " links " + link + ", a page in another language")
+    check(pair + " end with the repository, the feedback form and their own language's Why and setup pages",
+          not closing, "; ".join(closing))
 
     workflows = HERE / ".github" / "workflows"
     found = sorted(path.name for path in workflows.iterdir()) if workflows.is_dir() else []
@@ -347,8 +521,9 @@ def run_checks(results=None):
     check(".github/dependabot.yml equals the expected text", not problem, problem)
 
     find_folder = skills / "find-drift"
-    find_text = " ".join((find_folder / "SKILL.md").read_text(encoding="utf-8").split())
-    prune_text = " ".join((skills / "prune-drift" / "SKILL.md").read_text(encoding="utf-8").split())
+    find_raw = (find_folder / "SKILL.md").read_text(encoding="utf-8")
+    prune_raw = (skills / "prune-drift" / "SKILL.md").read_text(encoding="utf-8")
+    find_text, prune_text = " ".join(find_raw.split()), " ".join(prune_raw.split())
     check("find-drift closing paragraph: secrets and unrecorded weaknesses stop; documented gaps are drift",
           all(clause in find_text for clause in (
               "Stop when you meet a secret",
@@ -383,6 +558,44 @@ def run_checks(results=None):
               "ask whether to run them before anything merges",
               "This skill runs none of them"))
           and 0 <= prune_text.find("10. ") < prune_text.find("11. Close:"))
+
+    find_keys, prune_keys = REPORT_KEY.findall(find_text), REPORT_KEY.findall(prune_text)
+    written = REPORT_KEY.findall(_steps(find_raw).get(10, ""))
+    check("find-drift step 10 names the report's seven section keys, each as `## <key>`, in order",
+          written == list(REPORT_KEYS), "step 10 names: " + ", ".join(written))
+    check("find-drift names no other `## <key>`", set(find_keys) <= set(REPORT_KEYS),
+          "unknown: " + ", ".join(sorted(set(find_keys) - set(REPORT_KEYS))))
+    check("prune-drift names only `## <key>` that find-drift's step 10 writes",
+          set(prune_keys) <= set(REPORT_KEYS) and set(prune_keys) <= set(written),
+          "unknown: " + ", ".join(sorted(set(prune_keys) - (set(REPORT_KEYS) & set(written)))))
+    prune_steps = _steps(prune_raw)
+    unread = ["step " + str(number) + ": ## " + key for number, keys in sorted(PRUNE_READS.items()) for key in keys
+              if key not in REPORT_KEY.findall(prune_steps.get(number, ""))]
+    check("prune-drift names each key it reads at the step that reads it", not unread, "missing: " + ", ".join(unread))
+
+    for skill, text in (("find-drift", find_text), ("prune-drift", prune_text)):
+        sentence = _sentence(text, "the language the person writes in")
+        missing = [clause for clause in LANGUAGE_CLAUSES if clause not in sentence]
+        check(skill + " carries the language rule in one sentence", not missing, "missing: " + " | ".join(missing))
+
+    for skill, raw in (("find-drift", find_raw), ("prune-drift", prune_raw)):
+        found = [paragraph for paragraph in _paragraphs(raw) if "in their language" in paragraph]
+        check(skill + " holds its language sentence exactly as pinned, as its own paragraph",
+              LANGUAGE_SENTENCE[skill] in _paragraphs(raw), "found: " + (repr(found[0]) if found else "nothing"))
+
+    spans = {"find-drift": _key_spans(find_raw), "prune-drift": _key_spans(prune_raw)}
+    step10 = _key_spans(_raw_steps(find_raw).get(10, ""))
+    check("find-drift step 10 holds exactly the seven `## <key>` spans as written, in order",
+          step10 == list(REPORT_SPANS), "step 10 holds: " + ", ".join(repr(span) for span in step10))
+    for skill, found in sorted(spans.items()):
+        unknown = [span for span in found if span not in REPORT_SPANS]
+        check(skill + " holds no `##` span but the seven, as written", not unknown,
+              "unknown: " + ", ".join(repr(span) for span in unknown))
+    raw_steps = _raw_steps(prune_raw)
+    unread = ["step " + str(number) + ": ## " + key for number, keys in sorted(PRUNE_READS.items()) for key in keys
+              if "## " + key not in _key_spans(raw_steps.get(number, ""))]
+    check("prune-drift holds each key it reads, as written, at the step that reads it", not unread,
+          "missing: " + ", ".join(unread))
     return results
 
 
