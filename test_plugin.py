@@ -321,6 +321,8 @@ def run_checks(results=None):
     check("each needs-shoalmark skill starts with the gate (" + str(len(gated)) + " found)",
           all(ok for _, ok in gated), "without the gate: " + ", ".join(relative for relative, ok in gated if not ok))
 
+    for relative in ("README.md", "CHANGELOG.md", "SECURITY.md"):
+        check(relative + " exists", (HERE / relative).is_file())
     for relative in PUBLIC_ID_SCAN:
         for path in _files(HERE / relative):
             text = path.read_bytes().decode("utf-8", errors="replace")
