@@ -1,6 +1,7 @@
 ---
 name: find-drift
 description: "Find every place in this repository where an agent could drift off track — rules kept only as prose, sources that disagree, and obsolete text that still reads as live — and rank what can become a check. Reads the repository; writes one report and its hash in the tracker folder's evidence/drift/, or where it is told when there is no tracker folder. Use before a release or before pruning prose; after a single rule or ruling changes, run steps 3 to 7 on the sources it touches."
+compatibility: "Any git repository. Uses shoalmark.toml when present; never runs shoalmark."
 ---
 
 # Find drift

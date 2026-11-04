@@ -1,6 +1,7 @@
 ---
 name: prune-drift
 description: "Prune recorded history from comments and unread docstrings in tracked code, using find-drift's report and a proof that code stays the same. Record missing reasons first, list rules that could become checks, and fix obsolete or conflicting prose only where a superseding source settles it. Work on a new branch; write the actions, proof and limits to the tracker folder's evidence/drift/. Use after find-drift or when asked to prune prose."
+compatibility: "Any git repository. Uses shoalmark.toml when present; never runs shoalmark."
 ---
 
 # Prune drift
