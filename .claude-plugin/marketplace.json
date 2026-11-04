@@ -1,0 +1,12 @@
+{
+  "name": "shoalmark",
+  "owner": {
+    "name": "shoalmark"
+  },
+  "plugins": [
+    {
+      "name": "shoalmark",
+      "source": "./plugins/shoalmark"
+    }
+  ]
+}
