@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -130,9 +131,27 @@ def _files(path):
     return sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else []
 
 
+def _is_link(path):
+    return os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path))
+
+
+def _walk(folder):
+    files, links, stack = [], [], [folder]
+    while stack:
+        current = stack.pop()
+        if _is_link(current):
+            links.append(current)
+        elif current.is_dir():
+            with os.scandir(current) as entries:
+                stack += [Path(entry.path) for entry in entries]
+        elif current.is_file():
+            files.append(current)
+    return sorted(files), sorted(links)
+
+
 def _mentions(folder):
     found = []
-    for path in _files(folder):
+    for path in _walk(folder)[0]:
         lines = path.read_bytes().decode("utf-8", errors="replace").splitlines()
         for number, line in enumerate(lines, 1):
             if "shoalmark.py" in line.lower() and line.strip() not in ALLOWED_SHOALMARK_MENTIONS:
@@ -298,6 +317,8 @@ def run_checks(results=None):
             hits = _hits(ONE_HARNESS_TOOL, folder)
             check(folder.relative_to(HERE).as_posix() + " names no tool only one harness has", not hits,
                   "\n        ".join(hits))
+    links = [path.relative_to(HERE).as_posix() for path in _walk(HERE / "plugins")[1]]
+    check("plugins/ holds no symbolic link", not links, "\n        ".join(links))
     mentions = _mentions(HERE / PLUGIN)
     check(PLUGIN + " mentions shoalmark.py on no line outside ALLOWED_SHOALMARK_MENTIONS", not mentions,
           "\n        ".join(mentions))
