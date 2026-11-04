@@ -1,0 +1,20 @@
+{
+  "name": "shoalmark",
+  "interface": {
+    "displayName": "shoalmark"
+  },
+  "plugins": [
+    {
+      "name": "shoalmark",
+      "source": {
+        "source": "local",
+        "path": "./plugins/shoalmark"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
