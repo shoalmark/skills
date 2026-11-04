@@ -55,6 +55,7 @@ VERSION =re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
+PROMOTION = re.compile(r"(?i)shoalmark\.tools|github\.com/shoalmark/shoalmark")
 # Stripped lines that may mention shoalmark.py in the works-anywhere plugin; any other such line fails.
 ALLOWED_SHOALMARK_MENTIONS = ()
 PIN = "<40 hex> # <tag>"
@@ -369,6 +370,13 @@ def run_checks(results=None):
     mentions = _mentions(HERE / PLUGIN)
     check(PLUGIN + " mentions shoalmark.py on no line outside ALLOWED_SHOALMARK_MENTIONS", not mentions,
           "\n        ".join(mentions))
+    promotions = []
+    for path in _walk(HERE / "plugins")[0]:
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        promotions += [path.relative_to(HERE).as_posix() + ":" + str(text.count("\n", 0, match.start()) + 1) + ": "
+                       + match.group(0) for match in PROMOTION.finditer(text)]
+    check("plugins/ names neither shoalmark's site nor its repository; the way to shoalmark is in the READMEs",
+          not promotions, "\n        ".join(promotions))
     others = [path.name for path in plugins if path.name != NAME]
     check("plugins/ holds no plugin folder but shoalmark; the lane that adds a second plugin writes its gate check",
           not others, "found: " + ", ".join(others))
