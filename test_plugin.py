@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
@@ -27,14 +28,53 @@ VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
-SHOALMARK_COMMAND = re.compile(
-    r"(?<![\w./-])(?:python[0-9.]*|pypy[0-9.]*|py|uv[ \t]+run|pipx[ \t]+run|sys\.executable|subprocess|os\.system)"
-    r"(?![\w-])(?:(?![.;:]\s)[^\n]){0,80}?\bshoalmark\.py\b"
-    r"|(?<![\w.-])\.{1,2}/(?:[\w.-]+/)*shoalmark\.py\b"
-    r"|\bshoalmark\.py`?[ \t]+-{1,2}[A-Za-z]")
-PINNED_USES = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}[ \t]+#[ \t]*\S+")
-JOB_NAMES = ("tests (ubuntu, 3.9)", "tests (ubuntu, 3.12)", "tests (macos, 3.12)", "tests (windows, 3.9)",
-             "tests (windows, 3.12)")
+# Stripped lines that may mention shoalmark.py in the works-anywhere plugin; any other such line fails.
+ALLOWED_SHOALMARK_MENTIONS = ()
+PIN = "<40 hex> # <tag>"
+PINNED = re.compile(r"[0-9a-f]{40} # [0-9A-Za-z][0-9A-Za-z._-]*")
+CI_YML = """name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {contents: read}
+
+jobs:
+  tests:
+    name: tests (${{ matrix.system }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {system: ubuntu, image: ubuntu-24.04, python: "3.9"}
+          - {system: ubuntu, image: ubuntu-24.04, python: "3.12"}
+          - {system: macos, image: macos-26, python: "3.12"}
+          - {system: windows, image: windows-2025-vs2026, python: "3.9"}
+          - {system: windows, image: windows-2025-vs2026, python: "3.12"}
+    steps:
+      - uses: actions/checkout@<40 hex> # <tag>
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@<40 hex> # <tag>
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: git identity
+        run: git config --global user.email ci@example.invalid && git config --global user.name ci && git config --global init.defaultBranch main
+      - name: test_plugin.py
+        run: python -u test_plugin.py
+      - name: test_prune_drift.py
+        run: python -u test_prune_drift.py
+"""
+DEPENDABOT_YML = """version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: {interval: weekly}
+"""
 
 
 def _front_matter(text):
@@ -68,20 +108,6 @@ def _front_matter(text):
     return fields
 
 
-def _starts_with_gate(text):
-    lines = text.splitlines()
-    body = "\n".join(lines[lines.index("---", 1) + 1:])
-    match = re.search(r"(?ms)^1\.[ \t]+(.*?)(?=^\d+\.[ \t]|\Z)", body)
-    if match:
-        step = match.group(1)
-    else:
-        paragraphs = [part for part in re.split(r"\n[ \t]*\n", body) if part.strip() and not part.lstrip().startswith("#")]
-        step = paragraphs[0] if paragraphs else ""
-    step = " ".join(step.split())
-    return all(word in step for word in ("pinned", "shoalmark.py", "--version", "--check")) and (
-        step.index("pinned") < step.index("--version") < step.index("--check"))
-
-
 def _entries(marketplace):
     entries = marketplace.get("plugins")
     return entries if isinstance(entries, list) else []
@@ -105,74 +131,52 @@ def _files(path):
     return sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else []
 
 
-def _yaml_lines(text):
-    lines = []
-    for line in text.splitlines():
-        content = re.sub(r"(?:^|\s)#.*$", "", line).rstrip()
-        if content.strip():
-            lines.append((len(content) - len(content.lstrip(" ")), content.strip()))
-    return lines
+def _is_link(path):
+    return os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path))
 
 
-def _children(lines, index):
-    children = []
-    for depth, text in lines[index + 1:]:
-        if depth <= lines[index][0]:
-            break
-        children.append((depth, text))
-    return children
+def _walk(folder):
+    files, links, stack = [], [], [folder]
+    while stack:
+        current = stack.pop()
+        if _is_link(current):
+            links.append(current)
+        elif current.is_dir():
+            with os.scandir(current) as entries:
+                stack += [Path(entry.path) for entry in entries]
+        elif current.is_file():
+            files.append(current)
+    return sorted(files), sorted(links)
 
 
-def _compact(text):
-    return re.sub(r"[\s\"']+", "", text)
+def _mentions(folder):
+    found = []
+    for path in _walk(folder)[0]:
+        lines = path.read_bytes().decode("utf-8", errors="replace").splitlines()
+        for number, line in enumerate(lines, 1):
+            if "shoalmark.py" in line.lower() and line.strip() not in ALLOWED_SHOALMARK_MENTIONS:
+                found.append(path.relative_to(HERE).as_posix() + ":" + str(number) + ": " + line.strip())
+    return found
 
 
-def _triggers_ok(lines):
-    tops = [index for index, (depth, text) in enumerate(lines) if depth == 0 and re.match(r"[\"']?on[\"']?:", text)]
-    if len(tops) != 1 or _compact(lines[tops[0]][1].split(":", 1)[1]):
-        return False
-    children = _children(lines, tops[0])
-    events = {}
-    for index, (depth, text) in enumerate(children):
-        if depth == children[0][0]:
-            key, _, value = text.partition(":")
-            events[_compact(key)] = (_compact(value), [_compact(item) for _, item in _children(children, index)])
-    if set(events) != {"push", "pull_request"}:
-        return False
-    return (events["push"] == ("", ["branches:[main]"]) or events["push"] == ("", ["branches:", "-main"])) and (
-        events["pull_request"][0] in ("", "{}", "null", "~") and not events["pull_request"][1])
-
-
-def _permissions_ok(lines):
-    found = [index for index, (_, text) in enumerate(lines) if re.match(r"[\"']?permissions[\"']?:", text)]
-    if len(found) != 1 or lines[found[0]][0] != 0:
-        return False
-    value = _compact(lines[found[0]][1].split(":", 1)[1])
-    children = [_compact(text) for _, text in _children(lines, found[0])]
-    return (value == "{contents:read}" and not children) or (value == "" and children == ["contents:read"])
-
-
-def _job_names(lines):
-    tops = [index for index, (depth, text) in enumerate(lines) if depth == 0 and text == "jobs:"]
-    jobs = _children(lines, tops[0]) if len(tops) == 1 else []
-    names = []
-    for index, (depth, text) in enumerate(jobs):
-        if depth != jobs[0][0]:
-            continue
-        body = _children(jobs, index)
-        template, rows = text.rstrip(":"), []
-        for position, (inner, line) in enumerate(body):
-            if inner == body[0][0] and line.startswith("name:"):
-                template = line[len("name:"):].strip().strip("\"'")
-            if line == "include:":
-                for _, row in _children(body, position):
-                    match = re.fullmatch(r"-\s*\{(.*)\}", row)
-                    pairs = [part.split(":", 1) for part in match.group(1).split(",") if ":" in part] if match else []
-                    rows.append({key.strip(): value.strip().strip("\"'") for key, value in pairs})
-        for row in rows or [{}]:
-            names.append(re.sub(r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}",
-                                lambda match: row.get(match.group(1), "(no " + match.group(1) + ")"), template))
-    return names
+def _differs(expected, path):
+    try:
+        actual = path.read_bytes().decode("utf-8").replace("\r\n", "\n").split("\n")
+    except (OSError, ValueError) as error:
+        return str(error)
+    wanted = expected.split("\n")
+    for number, (want, have) in enumerate(zip(wanted, actual), 1):
+        prefix, pinned, _ = want.partition(PIN)
+        if pinned:
+            ok = have.startswith(prefix) and PINNED.fullmatch(have[len(prefix):]) is not None
+        else:
+            ok = have == want
+        if not ok:
+            return "line " + str(number) + ": " + repr(have)
+    if len(actual) != len(wanted):
+        number = min(len(actual), len(wanted))
+        return "line " + str(number + 1) + ": " + (repr(actual[number]) if len(actual) > number else "missing")
+    return ""
 
 
 def _hits(pattern, folder):
@@ -282,7 +286,6 @@ def run_checks(results=None):
     skills = HERE / SKILLS
     check("plugins/shoalmark/skills contains skills", skills.is_dir() and any(path.is_dir() for path in skills.iterdir()))
     plugins = sorted(path for path in (HERE / "plugins").iterdir() if path.is_dir()) if (HERE / "plugins").is_dir() else []
-    gated = []
     for plugin in plugins:
         folders = (plugin / "skills").iterdir() if (plugin / "skills").is_dir() else ()
         for folder in sorted(path for path in folders if path.is_dir()):
@@ -308,18 +311,20 @@ def run_checks(results=None):
                   compatibility is None or 0 < len(compatibility) <= 500)
             if plugin.name == NAME:
                 check(relative + " carries the works-anywhere compatibility wording", compatibility == WORKS_ANYWHERE)
-                hits = _hits(SHOALMARK_COMMAND, folder)
-                check(folder.relative_to(HERE).as_posix() + " never names shoalmark.py as a command", not hits,
-                      "\n        ".join(hits))
             else:
                 check(relative + " carries a needs-shoalmark compatibility wording",
                       bool(compatibility) and compatibility != WORKS_ANYWHERE)
-                gated.append((relative, _starts_with_gate(text)))
             hits = _hits(ONE_HARNESS_TOOL, folder)
             check(folder.relative_to(HERE).as_posix() + " names no tool only one harness has", not hits,
                   "\n        ".join(hits))
-    check("each needs-shoalmark skill starts with the gate (" + str(len(gated)) + " found)",
-          all(ok for _, ok in gated), "without the gate: " + ", ".join(relative for relative, ok in gated if not ok))
+    links = [path.relative_to(HERE).as_posix() for path in _walk(HERE / "plugins")[1]]
+    check("plugins/ holds no symbolic link", not links, "\n        ".join(links))
+    mentions = _mentions(HERE / PLUGIN)
+    check(PLUGIN + " mentions shoalmark.py on no line outside ALLOWED_SHOALMARK_MENTIONS", not mentions,
+          "\n        ".join(mentions))
+    others = [path.name for path in plugins if path.name != NAME]
+    check("plugins/ holds no plugin folder but shoalmark; the lane that adds a second plugin writes its gate check",
+          not others, "found: " + ", ".join(others))
 
     for relative in ("README.md", "CHANGELOG.md", "SECURITY.md"):
         check(relative + " exists", (HERE / relative).is_file())
@@ -333,26 +338,13 @@ def run_checks(results=None):
             check(path.relative_to(HERE).as_posix() + " has no home folder path", HOME_PATH.search(text) is None)
 
     workflows = HERE / ".github" / "workflows"
-    job_names = []
-    for path in sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml")) if workflows.is_dir() else []:
-        relative = path.relative_to(HERE).as_posix()
-        text = path.read_text(encoding="utf-8")
-        lines = _yaml_lines(text)
-        uses = [re.sub(r"^\s*(?:-\s+)?uses:", "", line).strip() for line in text.splitlines()
-                if re.match(r"\s*(?:-\s+)?uses:", line)]
-        check(relative + " pins every uses: to owner/repo@<40 hex> # <tag>",
-              all(PINNED_USES.fullmatch(value) for value in uses), "\n        ".join(uses))
-        check(relative + " grants only contents: read, at the top level", _permissions_ok(lines))
-        check(relative + " triggers on push to main and pull_request only", _triggers_ok(lines))
-        check(relative + " has no pull_request_target and no secrets.",
-              "pull_request_target" not in text and "secrets." not in text)
-        job_names += _job_names(lines)
-    check(".github/workflows job names are exactly the five tests (<os>, <python>)",
-          sorted(job_names) == sorted(JOB_NAMES), "found: " + "; ".join(job_names))
-    dependabot = HERE / ".github" / "dependabot.yml"
-    check(".github/dependabot.yml names the github-actions ecosystem", dependabot.is_file() and re.search(
-        r"(?m)^[ \t]*(?:-[ \t]+)?package-ecosystem:[ \t]*[\"']?github-actions[\"']?[ \t]*$",
-        dependabot.read_text(encoding="utf-8")) is not None)
+    found = sorted(path.name for path in workflows.iterdir()) if workflows.is_dir() else []
+    check(".github/workflows holds exactly one file, ci.yml", found == ["ci.yml"] and (workflows / "ci.yml").is_file(),
+          "found: " + ", ".join(found))
+    problem = _differs(CI_YML, workflows / "ci.yml")
+    check(".github/workflows/ci.yml equals the expected text but for its two pin values", not problem, problem)
+    problem = _differs(DEPENDABOT_YML, HERE / ".github" / "dependabot.yml")
+    check(".github/dependabot.yml equals the expected text", not problem, problem)
 
     find_folder = skills / "find-drift"
     find_text = " ".join((find_folder / "SKILL.md").read_text(encoding="utf-8").split())
