@@ -24,7 +24,34 @@ SCHEMA_NAME = re.compile(r"(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
 CODEX_INSTALLATION = ("AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE")
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 WORKS_ANYWHERE = "Any git repository. Uses shoalmark.toml when present; never runs shoalmark."
-VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
+FRONT_MATTER = {
+    "find-drift": (
+        "Find every place in this repository where an agent could drift off track — rules kept only as prose, "
+        "sources that disagree, and obsolete text that still reads as live — and rank what can become a check. "
+        "Reads the repository; writes one report and its hash in the tracker folder's evidence/drift/, or where it is "
+        "told when there is no tracker folder. Use before a release or before pruning prose; after a single rule or "
+        "ruling changes, run steps 3 to 7 on the sources it touches.",
+        WORKS_ANYWHERE),
+    "prune-drift": (
+        "Prune recorded history from comments and unread docstrings in tracked code, using find-drift's report and a "
+        "proof that code stays the same. Record missing reasons first, list rules that could become checks, and fix "
+        "obsolete or conflicting prose only where a superseding source settles it. Work on a new branch; write the "
+        "actions, proof and limits to the tracker folder's evidence/drift/. Use after find-drift or when asked to "
+        "prune prose.",
+        WORKS_ANYWHERE),
+}
+REPORT_KEYS = ("snapshot", "rules", "breaks", "ranking", "disagreements", "obsolete", "limits")
+REPORT_KEY = re.compile(r"`##[ ]([^`]*)`")
+PRUNE_READS = {2: ("snapshot", "limits"), 8: ("disagreements", "obsolete")}
+LANG_PATTERN = "[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*"
+LANGUAGE_CLAUSES = (
+    "talk with the person, in their language:",
+    "`lang` in this repository's `<tracker folder>/brand/labels.yaml`, read from no other place,",
+    "where its value fully matches `" + LANG_PATTERN + "`;",
+    "the language the person writes in;",
+    "section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written.",
+)
+VERSION =re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
@@ -179,6 +206,24 @@ def _differs(expected, path):
     return ""
 
 
+def _steps(text):
+    steps, number = {}, None
+    for line in text.splitlines():
+        match = re.match(r"(\d+)\. ", line)
+        if match:
+            number = int(match.group(1))
+            steps[number] = [line]
+        elif number is not None and line.startswith(" ") and line.strip():
+            steps[number].append(line)
+        else:
+            number = None
+    return {number: " ".join(" ".join(lines).split()) for number, lines in steps.items()}
+
+
+def _sentence(text, clause):
+    return next((sentence for sentence in re.split(r"(?<=\.)\s+", text) if clause in sentence), "")
+
+
 def _hits(pattern, folder):
     found = []
     for path in _files(folder):
@@ -311,6 +356,8 @@ def run_checks(results=None):
                   compatibility is None or 0 < len(compatibility) <= 500)
             if plugin.name == NAME:
                 check(relative + " carries the works-anywhere compatibility wording", compatibility == WORKS_ANYWHERE)
+                check(relative + " keeps its description and compatibility as written, in English",
+                      (description, compatibility) == FRONT_MATTER.get(folder.name))
             else:
                 check(relative + " carries a needs-shoalmark compatibility wording",
                       bool(compatibility) and compatibility != WORKS_ANYWHERE)
@@ -347,8 +394,9 @@ def run_checks(results=None):
     check(".github/dependabot.yml equals the expected text", not problem, problem)
 
     find_folder = skills / "find-drift"
-    find_text = " ".join((find_folder / "SKILL.md").read_text(encoding="utf-8").split())
-    prune_text = " ".join((skills / "prune-drift" / "SKILL.md").read_text(encoding="utf-8").split())
+    find_raw = (find_folder / "SKILL.md").read_text(encoding="utf-8")
+    prune_raw = (skills / "prune-drift" / "SKILL.md").read_text(encoding="utf-8")
+    find_text, prune_text = " ".join(find_raw.split()), " ".join(prune_raw.split())
     check("find-drift closing paragraph: secrets and unrecorded weaknesses stop; documented gaps are drift",
           all(clause in find_text for clause in (
               "Stop when you meet a secret",
@@ -383,6 +431,25 @@ def run_checks(results=None):
               "ask whether to run them before anything merges",
               "This skill runs none of them"))
           and 0 <= prune_text.find("10. ") < prune_text.find("11. Close:"))
+
+    find_keys, prune_keys = REPORT_KEY.findall(find_text), REPORT_KEY.findall(prune_text)
+    written = REPORT_KEY.findall(_steps(find_raw).get(10, ""))
+    check("find-drift step 10 names the report's seven section keys, each as `## <key>`, in order",
+          written == list(REPORT_KEYS), "step 10 names: " + ", ".join(written))
+    check("find-drift names no other `## <key>`", set(find_keys) <= set(REPORT_KEYS),
+          "unknown: " + ", ".join(sorted(set(find_keys) - set(REPORT_KEYS))))
+    check("prune-drift names only `## <key>` that find-drift's step 10 writes",
+          set(prune_keys) <= set(REPORT_KEYS) and set(prune_keys) <= set(written),
+          "unknown: " + ", ".join(sorted(set(prune_keys) - (set(REPORT_KEYS) & set(written)))))
+    prune_steps = _steps(prune_raw)
+    unread = ["step " + str(number) + ": ## " + key for number, keys in sorted(PRUNE_READS.items()) for key in keys
+              if key not in REPORT_KEY.findall(prune_steps.get(number, ""))]
+    check("prune-drift names each key it reads at the step that reads it", not unread, "missing: " + ", ".join(unread))
+
+    for skill, text in (("find-drift", find_text), ("prune-drift", prune_text)):
+        sentence = _sentence(text, "the language the person writes in")
+        missing = [clause for clause in LANGUAGE_CLAUSES if clause not in sentence]
+        check(skill + " carries the language rule in one sentence", not missing, "missing: " + " | ".join(missing))
     return results
 
 

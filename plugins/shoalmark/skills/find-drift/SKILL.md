@@ -8,6 +8,11 @@ compatibility: "Any git repository. Uses shoalmark.toml when present; never runs
 
 Read the repository; write only the report and its hash, or the private supplement below. Commit nothing.
 
+Write the prose of the report and the supplement, and talk with the person, in their language: `lang` in this
+repository's `<tracker folder>/brand/labels.yaml`, read from no other place, where its value fully matches
+`[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the person writes in;
+section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written.
+
 1. Snapshot: print `git rev-parse HEAD`, `date`, `git status --porcelain --untracked-files=all` and `git submodule
    status`. Stop if the tree is not clean, except for untracked reports and their hash files in `<tracker
    folder>/evidence/drift/`; ignore nothing else. The tracker folder is `tracker_dir` in `shoalmark.toml`, or
@@ -44,14 +49,16 @@ Read the repository; write only the report and its hash, or the private suppleme
    touches: settle their text before their check. Top 10; the rest, including zero-break rules, in one line;
    judgement rules apart.
 10. Report: write `<tracker folder>/evidence/drift/<date>-<short snapshot sha>.md` (date as `YYYY-MM-DD`, sha from
-    `git rev-parse --short HEAD`), or the agreed destination without a tracker folder. In order: snapshot sha and
-    sources' hashes; table with a legend; breaks and references; top 10, rest and judgement rules; disagreements;
-    obsolete text; definitions and limits. A scoped run takes step 1 in full, lists and hashes only the sources it
-    reads, and marks steps 8 and 9 not run. Write its sha256 to `<file>.sha256` beside it, never inside it. Never
-    read private notes unless the person names their folder for this run; then write only a supplement there, in
-    their private records under version control. Use the existing public report's snapshot sha and hash as its key:
-    counts only for its existing rule ids, with private references; it may rank again privately. Add no rule or
-    sentence to the public report, and never quote the supplement in it.
+    `git rev-parse --short HEAD`), or the agreed destination without a tracker folder. Begin each part with its
+    heading line, exactly as written here and nothing more, in this order: `## snapshot`, snapshot sha and sources'
+    hashes; `## rules`, table with a legend; `## breaks`, breaks and references; `## ranking`, top 10, rest and
+    judgement rules; `## disagreements`; `## obsolete`, obsolete text; `## limits`, definitions and limits. A scoped
+    run takes step 1 in full, lists and hashes only the sources it reads, and still writes all seven parts, marking
+    steps 8 and 9 not run in theirs. Write its sha256 to `<file>.sha256` beside it, never inside it. Never read
+    private notes unless the person names their folder for this run; then write only a supplement there, in their
+    private records under version control. Use the existing public report's snapshot sha and hash as its key: counts
+    only for its existing rule ids, with private references; it may rank again privately. Add no rule or sentence to
+    the public report, and never quote the supplement in it.
 11. Close: in your last message, not only in the report, tell the person each disagreement and each obsolete text by
     id with one line, and ask whether to file them as asks. Then name the next step:
     [prune-drift](../prune-drift/SKILL.md) records and removes history and fixes obsolete text from this report. It
