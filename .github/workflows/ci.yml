@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {contents: read}
+
+jobs:
+  tests:
+    name: tests (${{ matrix.system }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {system: ubuntu, image: ubuntu-24.04, python: "3.9"}
+          - {system: ubuntu, image: ubuntu-24.04, python: "3.12"}
+          - {system: macos, image: macos-26, python: "3.12"}
+          - {system: windows, image: windows-2025-vs2026, python: "3.9"}
+          - {system: windows, image: windows-2025-vs2026, python: "3.12"}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: git identity
+        run: git config --global user.email ci@example.invalid && git config --global user.name ci && git config --global init.defaultBranch main
+      - name: test_plugin.py
+        run: python -u test_plugin.py
+      - name: test_prune_drift.py
+        run: python -u test_prune_drift.py

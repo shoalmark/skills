@@ -32,6 +32,9 @@ SHOALMARK_COMMAND = re.compile(
     r"(?![\w-])(?:(?![.;:]\s)[^\n]){0,80}?\bshoalmark\.py\b"
     r"|(?<![\w.-])\.{1,2}/(?:[\w.-]+/)*shoalmark\.py\b"
     r"|\bshoalmark\.py`?[ \t]+-{1,2}[A-Za-z]")
+PINNED_USES = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}[ \t]+#[ \t]*\S+")
+JOB_NAMES = ("tests (ubuntu, 3.9)", "tests (ubuntu, 3.12)", "tests (macos, 3.12)", "tests (windows, 3.9)",
+             "tests (windows, 3.12)")
 
 
 def _front_matter(text):
@@ -100,6 +103,76 @@ def _files(path):
     if path.is_file():
         return [path]
     return sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else []
+
+
+def _yaml_lines(text):
+    lines = []
+    for line in text.splitlines():
+        content = re.sub(r"(?:^|\s)#.*$", "", line).rstrip()
+        if content.strip():
+            lines.append((len(content) - len(content.lstrip(" ")), content.strip()))
+    return lines
+
+
+def _children(lines, index):
+    children = []
+    for depth, text in lines[index + 1:]:
+        if depth <= lines[index][0]:
+            break
+        children.append((depth, text))
+    return children
+
+
+def _compact(text):
+    return re.sub(r"[\s\"']+", "", text)
+
+
+def _triggers_ok(lines):
+    tops = [index for index, (depth, text) in enumerate(lines) if depth == 0 and re.match(r"[\"']?on[\"']?:", text)]
+    if len(tops) != 1 or _compact(lines[tops[0]][1].split(":", 1)[1]):
+        return False
+    children = _children(lines, tops[0])
+    events = {}
+    for index, (depth, text) in enumerate(children):
+        if depth == children[0][0]:
+            key, _, value = text.partition(":")
+            events[_compact(key)] = (_compact(value), [_compact(item) for _, item in _children(children, index)])
+    if set(events) != {"push", "pull_request"}:
+        return False
+    return (events["push"] == ("", ["branches:[main]"]) or events["push"] == ("", ["branches:", "-main"])) and (
+        events["pull_request"][0] in ("", "{}", "null", "~") and not events["pull_request"][1])
+
+
+def _permissions_ok(lines):
+    found = [index for index, (_, text) in enumerate(lines) if re.match(r"[\"']?permissions[\"']?:", text)]
+    if len(found) != 1 or lines[found[0]][0] != 0:
+        return False
+    value = _compact(lines[found[0]][1].split(":", 1)[1])
+    children = [_compact(text) for _, text in _children(lines, found[0])]
+    return (value == "{contents:read}" and not children) or (value == "" and children == ["contents:read"])
+
+
+def _job_names(lines):
+    tops = [index for index, (depth, text) in enumerate(lines) if depth == 0 and text == "jobs:"]
+    jobs = _children(lines, tops[0]) if len(tops) == 1 else []
+    names = []
+    for index, (depth, text) in enumerate(jobs):
+        if depth != jobs[0][0]:
+            continue
+        body = _children(jobs, index)
+        template, rows = text.rstrip(":"), []
+        for position, (inner, line) in enumerate(body):
+            if inner == body[0][0] and line.startswith("name:"):
+                template = line[len("name:"):].strip().strip("\"'")
+            if line == "include:":
+                for _, row in _children(body, position):
+                    match = re.fullmatch(r"-\s*\{(.*)\}", row)
+                    pairs = [part.split(":", 1) for part in match.group(1).split(",") if ":" in part] if match else []
+                    rows.append({key.strip(): value.strip().strip("\"'") for key, value in pairs})
+        for row in rows or [{}]:
+            names.append(re.sub(r"\$\{\{\s*matrix\.([\w-]+)\s*\}\}",
+                                lambda match: row.get(match.group(1), "(no " + match.group(1) + ")"), template))
+    return names
 
 
 def _hits(pattern, folder):
@@ -256,6 +329,28 @@ def run_checks(results=None):
         for path in _files(HERE / relative):
             text = path.read_bytes().decode("utf-8", errors="replace")
             check(path.relative_to(HERE).as_posix() + " has no home folder path", HOME_PATH.search(text) is None)
+
+    workflows = HERE / ".github" / "workflows"
+    job_names = []
+    for path in sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml")) if workflows.is_dir() else []:
+        relative = path.relative_to(HERE).as_posix()
+        text = path.read_text(encoding="utf-8")
+        lines = _yaml_lines(text)
+        uses = [re.sub(r"^\s*(?:-\s+)?uses:", "", line).strip() for line in text.splitlines()
+                if re.match(r"\s*(?:-\s+)?uses:", line)]
+        check(relative + " pins every uses: to owner/repo@<40 hex> # <tag>",
+              all(PINNED_USES.fullmatch(value) for value in uses), "\n        ".join(uses))
+        check(relative + " grants only contents: read, at the top level", _permissions_ok(lines))
+        check(relative + " triggers on push to main and pull_request only", _triggers_ok(lines))
+        check(relative + " has no pull_request_target and no secrets.",
+              "pull_request_target" not in text and "secrets." not in text)
+        job_names += _job_names(lines)
+    check(".github/workflows job names are exactly the five tests (<os>, <python>)",
+          sorted(job_names) == sorted(JOB_NAMES), "found: " + "; ".join(job_names))
+    dependabot = HERE / ".github" / "dependabot.yml"
+    check(".github/dependabot.yml names the github-actions ecosystem", dependabot.is_file() and re.search(
+        r"(?m)^[ \t]*(?:-[ \t]+)?package-ecosystem:[ \t]*[\"']?github-actions[\"']?[ \t]*$",
+        dependabot.read_text(encoding="utf-8")) is not None)
 
     find_folder = skills / "find-drift"
     find_text = " ".join((find_folder / "SKILL.md").read_text(encoding="utf-8").split())
