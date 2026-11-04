@@ -61,7 +61,24 @@ LANGUAGE_CLAUSES = (
     "the language the person writes in;",
     "section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written.",
 )
-VERSION =re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
+LANGUAGE_SENTENCE = {
+    "find-drift": (
+        "Write the prose of the report and the supplement, and talk with the person, in their language: `lang` in "
+        "this repository's `<tracker folder>/brand/labels.yaml`, read from no other place, where its value fully "
+        "matches `[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the "
+        "person writes in; section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as "
+        "written."
+    ),
+    "prune-drift": (
+        "Write the report's prose, and talk with the person, in their language: `lang` in this repository's `<tracker "
+        "folder>/brand/labels.yaml`, read from no other place, where its value fully matches "
+        "`[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*`; where there is no such file, line or value, the language the person "
+        "writes in; section keys, ids, file names, front-matter keys, `find-drift` and `prune-drift` stay as written."
+    ),
+}
+REPORT_SPANS = tuple("## " + key for key in REPORT_KEYS)
+BACKTICK_SPAN = re.compile(r"`([^`]*)`")
+VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
@@ -217,7 +234,7 @@ def _differs(expected, path):
     return ""
 
 
-def _steps(text):
+def _raw_steps(text):
     steps, number = {}, None
     for line in text.splitlines():
         match = re.match(r"(\d+)\. ", line)
@@ -228,11 +245,30 @@ def _steps(text):
             steps[number].append(line)
         else:
             number = None
-    return {number: " ".join(" ".join(lines).split()) for number, lines in steps.items()}
+    return {number: "\n".join(lines) for number, lines in steps.items()}
+
+
+def _steps(text):
+    return {number: " ".join(step.split()) for number, step in _raw_steps(text).items()}
 
 
 def _sentence(text, clause):
     return next((sentence for sentence in re.split(r"(?<=\.)\s+", text) if clause in sentence), "")
+
+
+def _key_spans(text):
+    return [span for span in BACKTICK_SPAN.findall(text) if "##" in span]
+
+
+def _paragraphs(text):
+    found, lines = [], []
+    for line in text.split("\n") + [""]:
+        if line.strip():
+            lines.append(re.sub(r"^[ \t]+", "", line))
+        elif lines:
+            found.append(" ".join(lines))
+            lines = []
+    return found
 
 
 def _markdown(text):
@@ -541,6 +577,25 @@ def run_checks(results=None):
         sentence = _sentence(text, "the language the person writes in")
         missing = [clause for clause in LANGUAGE_CLAUSES if clause not in sentence]
         check(skill + " carries the language rule in one sentence", not missing, "missing: " + " | ".join(missing))
+
+    for skill, raw in (("find-drift", find_raw), ("prune-drift", prune_raw)):
+        found = [paragraph for paragraph in _paragraphs(raw) if "in their language" in paragraph]
+        check(skill + " holds its language sentence exactly as pinned, as its own paragraph",
+              LANGUAGE_SENTENCE[skill] in _paragraphs(raw), "found: " + (repr(found[0]) if found else "nothing"))
+
+    spans = {"find-drift": _key_spans(find_raw), "prune-drift": _key_spans(prune_raw)}
+    step10 = _key_spans(_raw_steps(find_raw).get(10, ""))
+    check("find-drift step 10 holds exactly the seven `## <key>` spans as written, in order",
+          step10 == list(REPORT_SPANS), "step 10 holds: " + ", ".join(repr(span) for span in step10))
+    for skill, found in sorted(spans.items()):
+        unknown = [span for span in found if span not in REPORT_SPANS]
+        check(skill + " holds no `##` span but the seven, as written", not unknown,
+              "unknown: " + ", ".join(repr(span) for span in unknown))
+    raw_steps = _raw_steps(prune_raw)
+    unread = ["step " + str(number) + ": ## " + key for number, keys in sorted(PRUNE_READS.items()) for key in keys
+              if "## " + key not in _key_spans(raw_steps.get(number, ""))]
+    check("prune-drift holds each key it reads, as written, at the step that reads it", not unread,
+          "missing: " + ", ".join(unread))
     return results
 
 
