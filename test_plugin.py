@@ -9,8 +9,18 @@ import sys
 HERE = Path(__file__).resolve().parent
 PUBLIC_ID = re.compile(r"\b(?:FM|RV|SP|HL|FEAT|BUG)-\d+\b")
 HOME_PATH = re.compile(r"(?i)(?:/(?:Users|home)/|[a-z]:[/\\]+Users[/\\]+|~[/\\]|%USERPROFILE%|\$(?:HOME\b|\{HOME\}))")
-PUBLIC_ID_SCAN = ("plugins", ".claude-plugin", ".agents", ".github", "README.md", "CHANGELOG.md", "SECURITY.md")
+ROOT_TEXTS = ("README.md", "README.de.md", "CHANGELOG.md", "SECURITY.md")
+PUBLIC_ID_SCAN = ("plugins", ".claude-plugin", ".agents", ".github") + ROOT_TEXTS
 HOME_PATH_SCAN = ("plugins", ".claude-plugin", ".agents", ".github")
+TWINS = ("README.md", "README.de.md")
+REPOSITORY = "https://github.com/shoalmark/shoalmark"
+FEEDBACK = "https://shoalmark.tools/feedback"
+OWN_PAGES = {
+    "README.md": ("https://shoalmark.tools/why-shoalmark.html", "https://shoalmark.tools/setup.html"),
+    "README.de.md": ("https://shoalmark.tools/de/warum-shoalmark.html", "https://shoalmark.tools/de/setup.html"),
+}
+OWN_SITE = {"README.md": "https://shoalmark.tools/", "README.de.md": "https://shoalmark.tools/de/"}
+INSTALL = re.compile(r"marketplace add|plugin install")
 
 NAME = "shoalmark"
 PLUGIN = "plugins/shoalmark"
@@ -225,6 +235,49 @@ def _sentence(text, clause):
     return next((sentence for sentence in re.split(r"(?<=\.)\s+", text) if clause in sentence), "")
 
 
+def _markdown(text):
+    parts = {"levels": [], "blocks": [], "installs": [], "last": ""}
+    prose, block, fence, last = [], [], "", 0
+
+    def spans():
+        found = re.findall(r"`([^`]+)`", "\n".join(prose))
+        parts["installs"].extend(" ".join(span.split()) for span in found if INSTALL.search(span))
+        del prose[:]
+
+    lines = text.split("\n")
+    for number, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        indented = len(line) - len(stripped) > 3
+        if fence:
+            block.append(line)
+            if not indented and re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", stripped):
+                parts["blocks"].append("\n".join(block))
+                block, fence = [], ""
+            elif INSTALL.search(line):
+                parts["installs"].append(" ".join(line.split()))
+            continue
+        opening = re.match(r"`{3,}|~{3,}", stripped)
+        heading = re.match(r"(#{1,6})(?:[ \t]|$)", stripped)
+        if opening and not indented:
+            spans()
+            fence, block = opening.group(0), [line]
+        elif heading and not indented:
+            spans()
+            parts["levels"].append(len(heading.group(1)))
+            last = number if len(heading.group(1)) <= 2 else last
+        else:
+            prose.append(line)
+    spans()
+    if fence:
+        parts["blocks"].append("\n".join(block))
+    parts["last"] = "\n".join(lines[last:])
+    return parts
+
+
+def _links(text):
+    return re.findall(r"\]\((\S+?)\)", text)
+
+
 def _hits(pattern, folder):
     found = []
     for path in _files(folder):
@@ -381,7 +434,7 @@ def run_checks(results=None):
     check("plugins/ holds no plugin folder but shoalmark; the lane that adds a second plugin writes its gate check",
           not others, "found: " + ", ".join(others))
 
-    for relative in ("README.md", "CHANGELOG.md", "SECURITY.md"):
+    for relative in ROOT_TEXTS:
         check(relative + " exists", (HERE / relative).is_file())
     for relative in PUBLIC_ID_SCAN:
         for path in _files(HERE / relative):
@@ -391,6 +444,36 @@ def run_checks(results=None):
         for path in _files(HERE / relative):
             text = path.read_bytes().decode("utf-8", errors="replace")
             check(path.relative_to(HERE).as_posix() + " has no home folder path", HOME_PATH.search(text) is None)
+
+    twins = {}
+    for relative in TWINS:
+        try:
+            twins[relative] = (HERE / relative).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            twins[relative] = ""
+    english, german = (_markdown(twins[relative]) for relative in TWINS)
+    pair = " and ".join(TWINS)
+    check(pair + " have the same sequence of heading levels", english["levels"] == german["levels"],
+          " | ".join(relative + ": " + " ".join("#" * level for level in parts["levels"])
+                     for relative, parts in zip(TWINS, (english, german))))
+    differ = [str(index + 1) for index in range(max(len(english["blocks"]), len(german["blocks"])))
+              if english["blocks"][index:index + 1] != german["blocks"][index:index + 1]]
+    check(pair + " have every fenced code block equal, in order", not differ,
+          "blocks that differ: " + ", ".join(differ))
+    check(pair + " have every install command equal, in order",
+          english["installs"] == german["installs"] and bool(english["installs"]),
+          " | ".join(relative + ": " + "; ".join(parts["installs"])
+                     for relative, parts in zip(TWINS, (english, german))))
+    closing = []
+    for relative, parts in zip(TWINS, (english, german)):
+        wanted = (REPOSITORY, FEEDBACK) + OWN_PAGES[relative]
+        closing += [relative + " last section lacks " + link for link in wanted if link not in _links(parts["last"])]
+        for link in _links(twins[relative]):
+            site = max((path for path in OWN_SITE.values() if link.startswith(path)), key=len, default=None)
+            if link != FEEDBACK and site not in (None, OWN_SITE[relative]):
+                closing.append(relative + " links " + link + ", a page in another language")
+    check(pair + " end with the repository, the feedback form and their own language's Why and setup pages",
+          not closing, "; ".join(closing))
 
     workflows = HERE / ".github" / "workflows"
     found = sorted(path.name for path in workflows.iterdir()) if workflows.is_dir() else []
