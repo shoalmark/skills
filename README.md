@@ -5,7 +5,7 @@
 Two agent skills from [shoalmark](https://github.com/shoalmark/shoalmark), packaged as one plugin for Claude Code and
 Codex.
 
-No release is tagged yet.
+The current release is `v1.0.0`.
 
 ## The skills
 
@@ -26,27 +26,35 @@ No release is tagged yet.
 
 ## Install and pin
 
-No release is tagged yet, so `<tag>` below stands for a release tag to come.
-
-The manifests carry no version string, so an install pinned to a tag stays on that tag's commit
+The plugin manifests carry the release's version, `1.0.0`. The skills carry their own version, apart from
+shoalmark's, and shoalmark's Skills page names the tag each shoalmark release pins. An install pinned to the
+release's tag stays on that release
 ([Release a new version](https://code.claude.com/docs/en/plugins/host-marketplace#release-a-new-version)).
 
 **Claude Code:**
 
 ```text
-/plugin marketplace add shoalmark/skills@<tag>
+/plugin marketplace add shoalmark/skills@v1.0.0
 /plugin install shoalmark@shoalmark
 ```
 
 **Codex:**
 
 ```text
-codex plugin marketplace add shoalmark/skills@<tag>
+codex plugin marketplace add shoalmark/skills@v1.0.0
 ```
 
 Then restart the ChatGPT desktop app, open the Plugins Directory, choose the shoalmark marketplace and install
 shoalmark from it
 ([Build your own curated plugin list](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list)).
+
+If you installed the plugin from shoalmark 0.20.2, its marketplace is also named shoalmark. In Claude Code, the add
+command above replaces it in place. In Codex, first remove it with the command below, then add the marketplace as
+above.
+
+```text
+codex plugin marketplace remove shoalmark
+```
 
 ## Use
 

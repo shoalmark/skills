@@ -1,6 +1,10 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "shoalmark",
+  "version": "1.0.0",
   "description": "Skills that find repository rules held only as prose, conflicting sources and obsolete guidance.",
+  "author": {
+    "name": "the shoalmark authors"
+  },
   "license": "Apache-2.0 OR MIT"
 }

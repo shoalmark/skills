@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 from pathlib import Path
@@ -21,12 +22,17 @@ OWN_PAGES = {
 }
 OWN_SITE = {"README.md": "https://shoalmark.tools/", "README.de.md": "https://shoalmark.tools/de/"}
 INSTALL = re.compile(r"marketplace add|plugin install")
+MARKETPLACE_ADD = "marketplace add"
+PIN_SOURCE = "shoalmark/skills@v"
+PLACEHOLDER = "<tag>"
 
 NAME = "shoalmark"
 PLUGIN = "plugins/shoalmark"
 SKILLS = PLUGIN + "/skills"
 DESCRIPTION = "Skills that find repository rules held only as prose, conflicting sources and obsolete guidance."
 LICENSE = "Apache-2.0 OR MIT"
+AUTHOR = {"name": "the shoalmark authors"}
+HOLDER_FILES = ("NOTICE", "LICENSE-MIT")
 SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 SCHEMA_PROPERTIES = ("$schema", "name", "version", "description", "author", "homepage", "repository", "license",
                      "keywords", "extensions")
@@ -79,6 +85,8 @@ LANGUAGE_SENTENCE = {
 REPORT_SPANS = tuple("## " + key for key in REPORT_KEYS)
 BACKTICK_SPAN = re.compile(r"`([^`]*)`")
 VERSION = re.compile(r"\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?")
+RELEASE = re.compile(r"\d+\.\d+\.\d+", re.ASCII)
+RELEASE_HEADING = re.compile(r"## (\d+\.\d+\.\d+) \u2014 (\d{4}-\d{2}-\d{2})", re.ASCII)
 ONE_HARNESS_TOOL = re.compile(
     r"\b(?:AskUserQuestion|EndConversation|TodoWrite|apply_patch|update_plan)\b"
     r"|\b(?:Bash|PowerShell|Skill|LSP)`?[ \t]+tools?\b")
@@ -166,6 +174,27 @@ def _front_matter(text):
 def _entries(marketplace):
     entries = marketplace.get("plugins")
     return entries if isinstance(entries, list) else []
+
+
+def _versions(label, manifest):
+    holders = [(label, manifest), (label + " metadata", manifest.get("metadata"))]
+    holders += [(label + " entry " + str(index), entry) for index, entry in enumerate(_entries(manifest))]
+    return [(where, holder["version"]) for where, holder in holders if isinstance(holder, dict) and "version" in holder]
+
+
+def _text(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
+
+
+def _real_date(text):
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _local_path(source):
@@ -401,11 +430,7 @@ def run_checks(results=None):
     versions = []
     for label, manifest in (("Claude marketplace", claude_market), ("Claude plugin.json", claude_plugin),
                             ("Codex plugin.json", codex_plugin), ("Codex marketplace", codex_market)):
-        holders = [(label, manifest), (label + " metadata", manifest.get("metadata"))]
-        holders += [(label + " entry " + str(index), entry) for index, entry in enumerate(_entries(manifest))]
-        for where, holder in holders:
-            if isinstance(holder, dict) and "version" in holder:
-                versions.append((where, json.dumps(holder["version"])))
+        versions += [(where, json.dumps(value)) for where, value in _versions(label, manifest)]
     changelog = HERE / "CHANGELOG.md"
     if changelog.is_file():
         headings = re.findall(r"(?m)^##[ \t]+(.+?)[ \t]*$", changelog.read_text(encoding="utf-8"))
@@ -417,6 +442,33 @@ def run_checks(results=None):
           len({value for _, value in versions}) <= 1, "; ".join(where + ": " + value for where, value in versions))
     check("Claude plugin.json and its marketplace entry do not both set version",
           not ("version" in claude_plugin and "version" in claude_entry))
+
+    plugin_versions = [manifest["version"] for manifest in (claude_plugin, codex_plugin) if "version" in manifest]
+    release = plugin_versions[0] if plugin_versions and _same(plugin_versions) else None
+    release = release if isinstance(release, str) else None
+    check("Claude and Codex plugin manifests both set version to the same X.Y.Z",
+          len(plugin_versions) == 2 and release is not None and RELEASE.fullmatch(release) is not None,
+          "Claude: " + json.dumps(claude_plugin.get("version")) + ", Codex: " + json.dumps(codex_plugin.get("version")))
+    markets = (("Claude marketplace", claude_market), ("Codex marketplace", codex_market))
+    in_markets = [where for label, market in markets for where, _ in _versions(label, market)]
+    check("neither marketplace sets version: not at its top level, in metadata or in an entry", not in_markets,
+          "set in: " + ", ".join(in_markets))
+    headings = re.findall(r"(?m)^(##[ \t]+(.+?)[ \t]*)$", _text(changelog))
+    newest = next((line for line, title in headings if title.strip("[] ").lower() != "unreleased"), "")
+    heading = RELEASE_HEADING.fullmatch(newest)
+    check("CHANGELOG.md's newest released heading is exactly ## X.Y.Z, an em dash and a real YYYY-MM-DD date, "
+          "at the plugin manifests' version",
+          heading is not None and _real_date(heading.group(2)) and heading.group(1) == release,
+          "heading: " + repr(newest) + ", plugin manifests: " + json.dumps(release))
+    unnamed = [relative for relative in HOLDER_FILES
+               if not re.search(r"(?m)^Copyright .+ " + re.escape(AUTHOR["name"]) + "$", _text(HERE / relative))]
+    check("both plugin manifests carry the author " + json.dumps(AUTHOR) + ", the holder "
+          + " and ".join(HOLDER_FILES) + " name",
+          claude_plugin.get("author") == AUTHOR and codex_plugin.get("author") == AUTHOR and not unnamed,
+          "Claude: " + json.dumps(claude_plugin.get("author")) + ", Codex: " + json.dumps(codex_plugin.get("author"))
+          + ("; no Copyright line names it in: " + ", ".join(unnamed) if unnamed else ""))
+    check("Claude marketplace carries shoalmark's description at its top level",
+          claude_market.get("description") == DESCRIPTION)
 
     skills = HERE / SKILLS
     check("plugins/shoalmark/skills contains skills", skills.is_dir() and any(path.is_dir() for path in skills.iterdir()))
@@ -510,6 +562,16 @@ def run_checks(results=None):
                 closing.append(relative + " links " + link + ", a page in another language")
     check(pair + " end with the repository, the feedback form and their own language's Why and setup pages",
           not closing, "; ".join(closing))
+    unpinned = []
+    for relative, parts in zip(TWINS, (english, german)):
+        adds = [install for install in parts["installs"] if MARKETPLACE_ADD in install]
+        unpinned += [relative + ": " + add for add in adds if add.split()[-1] != PIN_SOURCE + str(release)]
+        unpinned += [] if adds else [relative + ": no " + MARKETPLACE_ADD]
+    check(pair + " pin every " + MARKETPLACE_ADD + " to " + PIN_SOURCE + "<the plugin manifests' version>",
+          release is not None and not unpinned,
+          "plugin manifests: " + json.dumps(release) + "; " + " | ".join(unpinned))
+    placeholders = [relative for relative in TWINS if PLACEHOLDER in twins[relative]]
+    check(pair + " hold no " + PLACEHOLDER, not placeholders, "found in: " + ", ".join(placeholders))
 
     workflows = HERE / ".github" / "workflows"
     found = sorted(path.name for path in workflows.iterdir()) if workflows.is_dir() else []
