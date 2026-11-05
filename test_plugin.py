@@ -25,6 +25,7 @@ INSTALL = re.compile(r"marketplace add|plugin install")
 MARKETPLACE_ADD = "marketplace add"
 PIN_SOURCE = "shoalmark/skills@v"
 PLACEHOLDER = "<tag>"
+REFERENCE = re.compile(r"(?i:shoalmark/skills)@([^\s`\"'\u201c\u201d\u201e\u2018\u2019\u00ab\u00bb>\[\]()]*)")
 
 NAME = "shoalmark"
 PLUGIN = "plugins/shoalmark"
@@ -301,7 +302,7 @@ def _paragraphs(text):
 
 
 def _markdown(text):
-    parts = {"levels": [], "blocks": [], "installs": [], "last": ""}
+    parts = {"levels": [], "blocks": [], "installs": [], "last": "", "fenced": set()}
     prose, block, fence, last = [], [], "", 0
 
     def spans():
@@ -315,6 +316,7 @@ def _markdown(text):
         indented = len(line) - len(stripped) > 3
         if fence:
             block.append(line)
+            parts["fenced"].add(number)
             if not indented and re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", stripped):
                 parts["blocks"].append("\n".join(block))
                 block, fence = [], ""
@@ -337,6 +339,30 @@ def _markdown(text):
         parts["blocks"].append("\n".join(block))
     parts["last"] = "\n".join(lines[last:])
     return parts
+
+
+def _commands(text, fenced):
+    commands, unread = [], []
+    for number, line in enumerate(text.split("\n")):
+        if not INSTALL.search(line):
+            continue
+        if number in fenced:
+            commands.append(" ".join(line.split()))
+            continue
+        spans = list(BACKTICK_SPAN.finditer(line))
+        commands += [" ".join(span.group(1).split()) for span in spans if INSTALL.search(span.group(1))]
+        outside = [match for match in INSTALL.finditer(line)
+                   if not any(span.start() < match.start() and match.end() < span.end() for span in spans)]
+        expanded = line.expandtabs(4)
+        if outside and len(expanded) - len(expanded.lstrip(" ")) >= 4:
+            commands.append(" ".join(line.split()))
+        elif outside:
+            unread.append(number + 1)
+    return commands, unread
+
+
+def _references(text):
+    return [re.sub(r"[.,]$", "", match.group(0)) for match in REFERENCE.finditer(text)]
 
 
 def _links(text):
@@ -564,10 +590,16 @@ def run_checks(results=None):
           not closing, "; ".join(closing))
     unpinned = []
     for relative, parts in zip(TWINS, (english, german)):
-        adds = [install for install in parts["installs"] if MARKETPLACE_ADD in install]
+        commands, unread = _commands(twins[relative], parts["fenced"])
+        adds = [command for command in commands if MARKETPLACE_ADD in command]
         unpinned += [relative + ": " + add for add in adds if add.split()[-1] != PIN_SOURCE + str(release)]
         unpinned += [] if adds else [relative + ": no " + MARKETPLACE_ADD]
-    check(pair + " pin every " + MARKETPLACE_ADD + " to " + PIN_SOURCE + "<the plugin manifests' version>",
+        unpinned += [relative + ": reference " + reference for reference in _references(twins[relative])
+                     if reference.split("@", 1)[1] != "v" + str(release)]
+        unpinned += [relative + ":" + str(number) + ": an install command in a form the checks do not read"
+                     for number in unread]
+    check(pair + " pin every " + MARKETPLACE_ADD + " and every shoalmark/skills@ reference, in code or prose, to "
+          + PIN_SOURCE + "<the plugin manifests' version>, and leave no install command unread",
           release is not None and not unpinned,
           "plugin manifests: " + json.dumps(release) + "; " + " | ".join(unpinned))
     placeholders = [relative for relative in TWINS if PLACEHOLDER in twins[relative]]
