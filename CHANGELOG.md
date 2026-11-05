@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 — 2026-11-05
 
 - find-drift and prune-drift, moved from [shoalmark at c02ca26](https://github.com/shoalmark/shoalmark/commit/c02ca26ffdf8fa24781a4943148725880552703f)
   into `plugins/shoalmark/skills/`, each marked as a works-anywhere skill.
@@ -18,3 +18,5 @@
   pins both, with the language rule and each skill's description and compatibility.
 - README.de.md, the German README, and the way to shoalmark at the end of both READMEs and nowhere under `plugins/`;
   `test_plugin.py` checks that the two READMEs agree in headings, code blocks, install commands and closing links.
+- Both plugin manifests carry the version, `1.0.0`, and the author; Claude Code's marketplace carries the plugin's
+  description; the READMEs pin `v1.0.0` and say how to upgrade from shoalmark 0.20.2's plugin.

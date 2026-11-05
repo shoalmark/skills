@@ -5,7 +5,7 @@
 Zwei Agent-Skills aus [shoalmark](https://github.com/shoalmark/shoalmark), als ein Plugin für Claude Code und Codex
 verpackt.
 
-Noch ist kein Release getaggt.
+Das aktuelle Release ist `v1.0.0`.
 
 ## Die Skills
 
@@ -30,28 +30,35 @@ Noch ist kein Release getaggt.
 
 ## Installieren und festschreiben
 
-Noch ist kein Release getaggt, also steht `<tag>` unten für einen kommenden Release-Tag.
-
-Die Manifeste tragen keine Versionsangabe, also bleibt eine Installation, die auf einen Tag festgeschrieben ist, auf
-dem Commit dieses Tags
+Die Plugin-Manifeste tragen die Version des Releases, `1.0.0`. Die Skills tragen ihre eigene Version, getrennt von
+der Version von shoalmark, und die Skills-Seite von shoalmark nennt den Tag, den jedes Release von shoalmark
+festschreibt. Eine Installation, die auf den Tag des Releases festgeschrieben ist, bleibt auf diesem Release
 ([Eine neue Version veröffentlichen](https://code.claude.com/docs/en/plugins/host-marketplace#release-a-new-version)).
 
 **Claude Code:**
 
 ```text
-/plugin marketplace add shoalmark/skills@<tag>
+/plugin marketplace add shoalmark/skills@v1.0.0
 /plugin install shoalmark@shoalmark
 ```
 
 **Codex:**
 
 ```text
-codex plugin marketplace add shoalmark/skills@<tag>
+codex plugin marketplace add shoalmark/skills@v1.0.0
 ```
 
 Starte dann die ChatGPT-Desktop-App neu, öffne das Plugins Directory, wähle den Marketplace shoalmark und installiere
 shoalmark daraus
 ([Eine eigene kuratierte Plugin-Liste bauen](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list)).
+
+Wenn du das Plugin aus shoalmark 0.20.2 installiert hast, heißt sein Marketplace ebenfalls shoalmark. In Claude Code
+ersetzt ihn der Befehl zum Hinzufügen oben an Ort und Stelle. In Codex entferne ihn zuerst mit dem Befehl unten und
+füge dann den Marketplace wie oben hinzu.
+
+```text
+codex plugin marketplace remove shoalmark
+```
 
 ## Aufrufen
 
