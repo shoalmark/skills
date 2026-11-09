@@ -88,8 +88,10 @@ Kopierte Skills tragen kein Plugin-Präfix, also führt Claude Code sie als `/fi
 ## Mehr
 
 - [SECURITY.md](SECURITY.md), um eine Schwachstelle zu melden, und [CHANGELOG.md](CHANGELOG.md) für Änderungen.
-- Lizenziert unter Apache-2.0 oder MIT, nach deiner Wahl: [LICENSE-APACHE](LICENSE-APACHE),
-  [LICENSE-MIT](LICENSE-MIT) und [NOTICE](NOTICE).
+
+## Lizenz
+
+`Apache-2.0 OR MIT`, nach deiner Wahl: [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), [NOTICE](NOTICE).
 
 ## Woher diese Skills kommen
 

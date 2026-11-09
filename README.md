@@ -83,8 +83,10 @@ Copied skills carry no plugin prefix, so Claude Code runs them as `/find-drift` 
 ## More
 
 - [SECURITY.md](SECURITY.md) to report a vulnerability, and [CHANGELOG.md](CHANGELOG.md) for changes.
-- Licensed under Apache-2.0 or MIT, at your option: [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT) and
-  [NOTICE](NOTICE).
+
+## Licence
+
+`Apache-2.0 OR MIT`, at your option: [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), [NOTICE](NOTICE).
 
 ## Where these skills come from
 
